@@ -80,26 +80,51 @@ st.title('NDVI Analysis Dashboard')
 def create_time_series():
     fig = go.Figure()
     
+    # Calculate grand mean for the selected date range
+    mask_dates = (df['date'] >= pd.Timestamp(date_range[0])) & \
+                 (df['date'] <= pd.Timestamp(date_range[1]))
+    grand_mean = df[mask_dates].groupby('date')[metric].mean()
+    
+    # Add grand mean as a reference line
+    fig.add_trace(go.Scatter(
+        x=grand_mean.index,
+        y=grand_mean.values,
+        name='Overall Average',
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0.5)', dash='dash', width=2),
+        hovertemplate='Overall Average: %{y:.3f}<extra></extra>'
+    ))
+    
+    # Add individual pasture lines
     for pasture in selected_pastures:
-        mask = (df['Label'] == pasture) & \
-               (df['date'] >= pd.Timestamp(date_range[0])) & \
-               (df['date'] <= pd.Timestamp(date_range[1]))
-        
+        mask = (df['Label'] == pasture) & mask_dates
         pasture_data = df[mask]
+        
+        # Calculate how this pasture compares to grand mean
+        avg_diff = pasture_data[metric].mean() - grand_mean.loc[pasture_data['date']].mean()
+        performance = "above" if avg_diff > 0 else "below"
         
         fig.add_trace(go.Scatter(
             x=pasture_data['date'],
             y=pasture_data[metric],
-            name=pasture,
-            mode='lines+markers'
+            name=f"{pasture} ({performance} avg)",
+            mode='lines+markers',
+            hovertemplate=f"{pasture}<br>Value: %{{y:.3f}}<br>Date: %{{x}}<extra></extra>"
         ))
     
     fig.update_layout(
-        title='NDVI Values Over Time',
+        title='NDVI Values Over Time (Dashed Line = Dynamic Overall Average)',
         xaxis_title='Date',
         yaxis_title=metric.replace('ndvi_', 'NDVI ').upper(),
-        hovermode='x unified'
+        hovermode='x unified',
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.05
+        )
     )
+    
     return fig
 
 # Display time series plot
@@ -111,43 +136,55 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader('Pasture Health Status')
     
-    # Calculate current and historical metrics
-    current_values = df[df['Label'].isin(selected_pastures)].groupby('Label')[metric].last()
-    historical_avg = df[df['Label'].isin(selected_pastures)].groupby('Label')[metric].mean()
+    # Calculate current values and overall average for each date
+    current_date = df['date'].max()
+    current_values = df[df['Label'].isin(selected_pastures) & (df['date'] == current_date)].set_index('Label')[metric]
     
-    # Define health thresholds (adjust these based on your specific needs)
-    def get_health_status(value):
-        if value >= 0.6: return "🟢 Healthy"
-        elif value >= 0.4: return "🟡 Moderate"
-        else: return "🔴 Needs Attention"
+    # Calculate dynamic overall average for comparison
+    overall_avg_by_date = df.groupby('date')[metric].mean()
     
-    # Calculate trending (comparing last 2 measurements)
-    recent_trend = df[df['Label'].isin(selected_pastures)].sort_values('date').groupby('Label')[metric].agg(
-        lambda x: '📈' if x.iloc[-1] > x.iloc[-2] else '📉' if x.iloc[-1] < x.iloc[-2] else '➡️'
-    )
+    # Calculate how each pasture performs relative to the overall average
+    def get_health_status(row):
+        pasture_data = df[df['Label'] == row.name]
+        avg_diff = pasture_data[metric].mean() - overall_avg_by_date.loc[pasture_data['date']].mean()
+        
+        if avg_diff > 0.1: return "🟢 Above Average"
+        elif avg_diff < -0.1: return "🔴 Below Average"
+        else: return "🟡 Average"
     
-    # Combine into status dataframe
-    status_df = pd.DataFrame({
-        'Current Value': current_values.round(3),
-        'Historical Avg': historical_avg.round(3),
-        'Status': current_values.map(get_health_status),
-        'Trend': recent_trend
-    })
+    # Calculate trending (comparing to overall average)
+    def get_trend(row):
+        pasture_current = current_values.get(row.name, 0)
+        current_overall_avg = overall_avg_by_date.loc[current_date]
+        
+        diff = pasture_current - current_overall_avg
+        if abs(diff) < 0.05:
+            return '➡️ At Average'
+        return '📈 Above Average' if diff > 0 else '📉 Below Average'
+    
+    # Create status dataframe
+    status_df = pd.DataFrame(index=selected_pastures)
+    status_df['Current Value'] = current_values.round(3)
+    status_df['Overall Average'] = overall_avg_by_date[current_date].round(3)
+    status_df['Difference'] = (current_values - overall_avg_by_date[current_date]).round(3)
+    status_df['Status'] = status_df.apply(get_health_status, axis=1)
+    status_df['Relative Position'] = status_df.apply(get_trend, axis=1)
     
     st.dataframe(status_df, use_container_width=True)
     
-    # Show benchmark comparison
-    st.subheader('Benchmark Comparison')
-    best_performer = df.groupby('Label')[metric].mean().nlargest(1).index[0]
-    benchmark_df = df[df['Label'] == best_performer][metric].mean()
-    
+    # Update benchmark comparison to use dynamic average
+    st.subheader('Performance vs Overall Average')
     for pasture in selected_pastures:
-        pasture_avg = df[df['Label'] == pasture][metric].mean()
-        performance_ratio = (pasture_avg / benchmark_df) * 100
+        pasture_data = df[df['Label'] == pasture]
+        pasture_avg = pasture_data[metric].mean()
+        matching_overall_avg = overall_avg_by_date.loc[pasture_data['date']].mean()
+        performance_ratio = (pasture_avg / matching_overall_avg) * 100
+        
         st.metric(
             label=pasture,
             value=f"{pasture_avg:.3f}",
-            delta=f"{performance_ratio:.1f}% of best performer"
+            delta=f"{(performance_ratio - 100):.1f}% vs average",
+            delta_color="normal"
         )
 
 with col2:
