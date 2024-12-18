@@ -1,5 +1,7 @@
 {pkgs}: {
   deps = [
+    pkgs.geos
+    pkgs.proj
     pkgs.glibcLocales
     pkgs.tk
     pkgs.tcl
