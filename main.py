@@ -109,9 +109,46 @@ st.plotly_chart(create_time_series(), use_container_width=True)
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader('Summary Statistics')
-    stats_df = df[df['Label'].isin(selected_pastures)].groupby('Label')[metric].agg(['mean', 'std', 'min', 'max'])
-    st.dataframe(stats_df.round(3))
+    st.subheader('Pasture Health Status')
+    
+    # Calculate current and historical metrics
+    current_values = df[df['Label'].isin(selected_pastures)].groupby('Label')[metric].last()
+    historical_avg = df[df['Label'].isin(selected_pastures)].groupby('Label')[metric].mean()
+    
+    # Define health thresholds (adjust these based on your specific needs)
+    def get_health_status(value):
+        if value >= 0.6: return "🟢 Healthy"
+        elif value >= 0.4: return "🟡 Moderate"
+        else: return "🔴 Needs Attention"
+    
+    # Calculate trending (comparing last 2 measurements)
+    recent_trend = df[df['Label'].isin(selected_pastures)].sort_values('date').groupby('Label')[metric].agg(
+        lambda x: '📈' if x.iloc[-1] > x.iloc[-2] else '📉' if x.iloc[-1] < x.iloc[-2] else '➡️'
+    )
+    
+    # Combine into status dataframe
+    status_df = pd.DataFrame({
+        'Current Value': current_values.round(3),
+        'Historical Avg': historical_avg.round(3),
+        'Status': current_values.map(get_health_status),
+        'Trend': recent_trend
+    })
+    
+    st.dataframe(status_df, use_container_width=True)
+    
+    # Show benchmark comparison
+    st.subheader('Benchmark Comparison')
+    best_performer = df.groupby('Label')[metric].mean().nlargest(1).index[0]
+    benchmark_df = df[df['Label'] == best_performer][metric].mean()
+    
+    for pasture in selected_pastures:
+        pasture_avg = df[df['Label'] == pasture][metric].mean()
+        performance_ratio = (pasture_avg / benchmark_df) * 100
+        st.metric(
+            label=pasture,
+            value=f"{pasture_avg:.3f}",
+            delta=f"{performance_ratio:.1f}% of best performer"
+        )
 
 with col2:
     st.subheader('Monthly Patterns')
@@ -264,6 +301,38 @@ else:  # Seasonal Transitions
     
     st.write("Best Fall Recovery (Summer to Fall):")
     st.dataframe((seasonal_changes['Fall'] - seasonal_changes['Summer']).sort_values(ascending=False).head())
+
+# Recommendations Section
+st.subheader('Management Recommendations')
+
+# Generate recommendations based on analysis
+def get_recommendations(pasture_data):
+    recommendations = []
+    
+    # Spring growth check
+    spring_growth = pasture_data[pasture_data['date'].dt.month.isin([3,4,5])][metric].mean()
+    if spring_growth < 0.4:
+        recommendations.append("Consider earlier fertilization for better spring growth")
+    
+    # Recovery patterns
+    fall_recovery = pasture_data[pasture_data['date'].dt.month.isin([8,9,10])][metric].mean()
+    if fall_recovery < 0.35:
+        recommendations.append("Implement rotational grazing to improve recovery")
+    
+    # Variability check
+    if pasture_data[metric].std() > 0.15:
+        recommendations.append("High variability detected - review grazing patterns")
+    
+    return recommendations
+
+for pasture in selected_pastures:
+    pasture_data = df[df['Label'] == pasture]
+    recommendations = get_recommendations(pasture_data)
+    
+    if recommendations:
+        st.write(f"**{pasture}**")
+        for rec in recommendations:
+            st.write(f"- {rec}")
 
 # Download data option
 st.sidebar.download_button(
