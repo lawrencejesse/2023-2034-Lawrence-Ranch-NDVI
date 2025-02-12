@@ -12,6 +12,16 @@ import geopandas as gpd
 
 st.set_page_config(layout="wide", page_title="NDVI Analysis Dashboard")
 
+# Add welcome message
+st.title('Demo NDVI Pasture Analysis')
+st.write("""
+This demo explores some ways to visualize and work with freely available NDVI satellite imagery (Sentinel-2).
+
+I've pre-loaded cloud free NDVI imagery from 8 quarters of pasture. I've also added field boundaries to split the landbase into individual paddocks.
+
+Open the left sidebar and choose which paddocks you want to examine, and the date range over which you are interested (2023 and 2024). And the main page will be populated with some exporatory visualizations. Feel free to play around with the info. The visualizations are rough, and the analysis are not neccessarily useful in their current state, but the idea is to generate conversation and suggestions from users.
+""")
+
 # Function to extract date from filename
 def extract_date(filename):
     date_str = filename.split('_ndvi')[1].split(',')[0]
@@ -90,33 +100,33 @@ st.sidebar.header('Visualization Controls')
 
 # Pasture selection
 all_pastures = sorted(df['Label'].unique())
+default_pastures = ['HOME 1/4', 'NE-20', 'LUMNGAIRE']
 selected_pastures = st.sidebar.multiselect(
     'Select Pastures to Display',
     all_pastures,
-    default=all_pastures[:3]  # Default to first 3 pastures
+    default=default_pastures
 )
 
-# Date range selection
-try:
-    default_start_date = df['date'].min()
-    default_end_date = df['date'].max()
-    date_range = st.sidebar.date_input(
-        "Select Date Range",
-        value=(default_start_date, default_end_date),
-        min_value=default_start_date,
-        max_value=default_end_date,
-        key='date_range'
-    )
-    # Ensure we have both start and end dates
-    if isinstance(date_range, tuple):
-        start_date, end_date = date_range
-    else:
-        start_date = end_date = date_range
-except Exception as e:
-    # Fallback to using all dates if there's any error
+# Available dates from the data files
+available_dates = [d.strftime('%Y-%m-%d') for d in sorted(df['date'].unique())]
+dates_2023 = [d for d in available_dates if d.startswith('2023')]
+
+# Date selection
+st.sidebar.header("Select Dates")
+selected_dates = st.sidebar.multiselect(
+    "Choose dates to analyze",
+    available_dates,
+    default=dates_2023  # Default to all 2023 dates
+)
+
+# Convert selected dates to datetime for filtering
+if selected_dates:
+    start_date = pd.Timestamp(min(selected_dates))
+    end_date = pd.Timestamp(max(selected_dates))
+else:
     start_date = df['date'].min()
     end_date = df['date'].max()
-    st.sidebar.error("Error with date selection. Showing all dates.")
+    st.sidebar.warning("No dates selected. Showing all dates.")
 
 # Metric selection
 metric = st.sidebar.selectbox(
@@ -126,7 +136,7 @@ metric = st.sidebar.selectbox(
 )
 
 # Main content
-st.title('NDVI Analysis Dashboard')
+# st.title('NDVI Analysis Dashboard')
 
 # Time series plot using Plotly
 def create_time_series():
@@ -437,15 +447,20 @@ st.subheader('Spatial Overview')
 col_map, col_info = st.columns([2, 1])
 
 with col_info:
-    # Add date selector for map
-    available_dates = sorted(df['date'].unique())
-    selected_date = st.date_input(
-        "Select Date for Map",
-        value=df['date'].max(),
-        min_value=df['date'].min(),
-        max_value=df['date'].max(),
+    # Available dates for map view
+    map_dates = [d.strftime('%Y-%m-%d') for d in sorted(df['date'].unique())]
+    
+    # Map date selector
+    st.header("Map View")
+    map_date = st.selectbox(
+        "Select date for map",
+        map_dates,
+        format_func=lambda x: x,
         key='map_date'
     )
+    
+    # Convert selected date string to datetime for filtering
+    map_date = datetime.strptime(map_date, '%Y-%m-%d')
     
     # Add metric selector for map
     map_metric = st.selectbox(
@@ -456,55 +471,48 @@ with col_info:
     )
     
     st.write(f"Showing {map_metric.replace('ndvi_', 'NDVI ').upper()} values")
-    st.write(f"Date: {selected_date.strftime('%Y-%m-%d')}")
+    st.write(f"Date: {map_date.strftime('%Y-%m-%d')}")
     st.write("Hover over pastures to see details.")
-
-# Modify the create_map function to use selected date and metric
-def create_map(df, geojson_path, selected_date, map_metric):
-    # Get the selected date's data
-    date_data = df[df['date'].dt.date == selected_date]
-    
-    # Read the GeoJSON and handle the CRS
-    gdf = gpd.read_file(geojson_path)
-    gdf = gdf.to_crs('EPSG:4326')
-    
-    # Merge with selected date's NDVI data
-    gdf = gdf.merge(date_data[['Label', map_metric]], on='Label')
-    
-    # Create choropleth map using plotly
-    fig = px.choropleth_mapbox(
-        gdf,
-        geojson=gdf.geometry.__geo_interface__,
-        locations=gdf.index,
-        color=map_metric,
-        hover_name='Label',
-        hover_data=[map_metric, 'ACRES'],
-        color_continuous_scale='RdYlGn',
-        mapbox_style='carto-positron',
-        center={'lat': gdf.geometry.centroid.y.mean(), 
-                'lon': gdf.geometry.centroid.x.mean()},
-        zoom=14
-    )
-    
-    fig.update_layout(
-        margin={"r":0,"t":0,"l":0,"b":0},
-        height=500,
-        mapbox=dict(
-            pitch=0,
-            bearing=0
-        )
-    )
-    
-    return fig
 
 with col_map:
     # Get the GeoJSON file for the selected date
-    geojson_files = glob.glob('NDVI Zonal Stats/*.geojson')
-    selected_file = [f for f in geojson_files 
-                    if selected_date.strftime('%Y-%m-%d') in f]
+    selected_file = f"NDVI Zonal Stats/_ndvi{map_date.strftime('%Y-%m-%d')}, Total Land, NDVI.data.geojson"
     
-    if selected_file:
-        map_fig = create_map(df, selected_file[0], selected_date, map_metric)
-        st.plotly_chart(map_fig, use_container_width=True)
+    if os.path.exists(selected_file):
+        # Get the selected date's data
+        date_data = df[df['date'].dt.date == map_date.date()]
+        
+        # Read the GeoJSON and handle the CRS
+        gdf = gpd.read_file(selected_file)
+        gdf = gdf.to_crs('EPSG:4326')
+        
+        # Merge with selected date's NDVI data
+        gdf = gdf.merge(date_data[['Label', map_metric]], on='Label')
+        
+        # Create choropleth map using plotly
+        fig = px.choropleth_mapbox(
+            gdf,
+            geojson=gdf.geometry.__geo_interface__,
+            locations=gdf.index,
+            color=map_metric,
+            hover_name='Label',
+            hover_data=[map_metric, 'ACRES'],
+            color_continuous_scale='RdYlGn',
+            mapbox_style='carto-positron',
+            center={'lat': gdf.geometry.centroid.y.mean(), 
+                    'lon': gdf.geometry.centroid.x.mean()},
+            zoom=14
+        )
+        
+        fig.update_layout(
+            margin={"r":0,"t":0,"l":0,"b":0},
+            height=500,
+            mapbox=dict(
+                pitch=0,
+                bearing=0
+            )
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.error(f"No data available for {selected_date}")
+        st.error(f"No data available for {map_date}")
